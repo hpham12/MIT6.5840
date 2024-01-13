@@ -6,10 +6,31 @@ import "os"
 import "net/rpc"
 import "net/http"
 
+type WorkerInfo struct {
+	reduceTasks []string // list of reduce tasks
+	mapTasks []string // list of map tasks
+	status bool // 0 for down, 1 for up
+}
+
+type IntermediateFileInfo struct {
+	size int
+	location string
+}
+
+type MapTaskInfo struct {
+	currentWorker int // pid of the current worker
+	status string // "idle", "completed", or "in-progress"
+	intermediateFiles []IntermediateFileInfo
+}
+
+type ReduceTaskInfo struct {
+	status string // "idle", "completed", or "in-progress"
+
+}
 
 type Coordinator struct {
-	// Your definitions here.
-
+	currentWorker int // pid of the current worker
+	workersInfoMapping map[int]WorkerInfo // map worker PID to worker information
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -49,7 +70,6 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-
 
 	return ret
 }

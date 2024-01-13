@@ -18,22 +18,30 @@ type IntermediateFileInfo struct {
 }
 
 type MapTaskInfo struct {
+	mapTaskId string
 	currentWorker int // pid of the current worker
-	status string // "idle", "completed", or "in-progress"
 	intermediateFiles []IntermediateFileInfo
 }
 
 type ReduceTaskInfo struct {
-	status string // "idle", "completed", or "in-progress"
-
+	reduceTaskId string
+	currentWorker int // pid of the current worker
 }
 
 type Coordinator struct {
-	currentWorker int // pid of the current worker
 	workersInfoMapping map[int]WorkerInfo // map worker PID to worker information
+	mapTasksInfoMapping map[string][]MapTaskInfo // keys are: idle, completed, and in-progress
+	reduceTasksInfoMapping map[string][]ReduceTaskInfo // keys are: idle, completed, and in-progress
 }
 
 // Your code here -- RPC handlers for the worker to call.
+func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
+	if args.RequestType == "task" {
+		reply.MapTask = c.mapTasksInfoMapping["idle"][0].mapTaskId
+	}
+	return nil
+}
+
 
 //
 // an example RPC handler.
@@ -83,7 +91,22 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
+	c.workersInfoMapping = make(map[int]WorkerInfo)
 
+	mapTasksMapping := make(map[string][]MapTaskInfo)
+	mapTasksMapping["idle"] = []MapTaskInfo{}
+	mapTasksMapping["in-progress"] = []MapTaskInfo{}
+	mapTasksMapping["completed"] = []MapTaskInfo{}
+
+
+
+	for _,file := range files {
+		mapTaskInfo := MapTaskInfo{}
+		mapTaskInfo.mapTaskId = file
+		mapTasksMapping["idle"] = append(mapTasksMapping["idle"], mapTaskInfo)
+	}
+	
+	c.mapTasksInfoMapping = mapTasksMapping
 
 	c.server()
 	return &c

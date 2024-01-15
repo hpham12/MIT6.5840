@@ -1,15 +1,23 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
+import (
+	"container/list"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"sync"
+	"time"
+	// "reflect"
+)
 
 type WorkerInfo struct {
 	reduceTasks []string // list of reduce tasks
 	mapTasks []string // list of map tasks
-	status bool // 0 for down, 1 for up
+	status bool // false for down, true for up
+	lastPing int64 // time of last ping
 }
 
 type IntermediateFileInfo struct {
@@ -17,42 +25,87 @@ type IntermediateFileInfo struct {
 	location string
 }
 
-type MapTaskInfo struct {
+type MapTask struct {
 	mapTaskId string
 	currentWorker int // pid of the current worker
 	intermediateFiles []IntermediateFileInfo
 }
 
-type ReduceTaskInfo struct {
+type ReduceTask struct {
 	reduceTaskId string
 	currentWorker int // pid of the current worker
 }
 
 type Coordinator struct {
 	workersInfoMapping map[int]WorkerInfo // map worker PID to worker information
-	mapTasksInfoMapping map[string][]MapTaskInfo // keys are: idle, completed, and in-progress
-	reduceTasksInfoMapping map[string][]ReduceTaskInfo // keys are: idle, completed, and in-progress
+	mapTasks map[string]*list.List // keys are: idle, completed, and in-progress
+	reduceTasks map[string]*list.List // keys are: idle, completed, and in-progress
+	mapTaskLock sync.Mutex
+	reduceTasksLock sync.Mutex
+	workersLock sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
 func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
-	if args.RequestType == "task" {
-		reply.MapTask = c.mapTasksInfoMapping["idle"][0].mapTaskId
+	requestType := args.RequestType
+	workerId := args.WorkerId
+	if requestType == "task" {
+		currentElement := c.mapTasks["idle"].Front()
+		currentMapTask := currentElement.Value.(MapTask)
+		currentMapTask.currentWorker = workerId
+		currentmapTaskId := currentMapTask.mapTaskId
+		reply.MapTask = currentmapTaskId
+		c.workersLock.Lock()
+		c.workersInfoMapping[workerId] = WorkerInfo{[]string{}, []string{currentmapTaskId}, true, time.Now().Unix()}
+		c.workersLock.Unlock()
+		// Remove task from idle list
+		(*c.mapTasks["idle"]).Remove(currentElement)
+
+		// Move task to in-progress list
+		(*c.mapTasks["in-progress"]).PushBack(currentMapTask)
+	} else if requestType == "ping" {
+		// val, ok := c.workersInfoMapping[workerId]
+		// if ok {
+		// 	if time.Now().Unix() - val.lastPing >= 10 {
+		// 		c.handleFailedWorker(workerId)
+		// 	}
+		// }
 	}
+	
 	return nil
 }
 
+func (c *Coordinator) handleFailedWorker(workerId int) {
+	completedMapTasks := c.mapTasks["completed"]
+	inProgressMapTasks := c.mapTasks["in-progress"]
+	completedTasksToBeRemoved := []*list.Element{}
+	inProgressTasksToBeRemoved := []*list.Element{}
+	c.mapTaskLock.Lock()
+	for mapTask := completedMapTasks.Front(); mapTask != nil; mapTask = mapTask.Next() {
+		if mapTask.Value.(MapTask).currentWorker == workerId {
+			c.mapTaskLock.Lock()
+			(*c.mapTasks["idle"]).PushBack(mapTask)
+			completedTasksToBeRemoved = append(completedTasksToBeRemoved, mapTask)
+		}
+	}
+	for mapTask := inProgressMapTasks.Front(); mapTask != nil; mapTask = mapTask.Next() {
+		if mapTask.Value.(MapTask).currentWorker == workerId {
+			(*c.mapTasks["idle"]).PushBack(mapTask)
+			inProgressTasksToBeRemoved = append(inProgressTasksToBeRemoved, mapTask)
+		}
+	}
 
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
+	for _,completedTaskToBeRemoved := range completedTasksToBeRemoved{
+		completedMapTasks.Remove(completedTaskToBeRemoved)
+	}
+
+	for _,inProgressTaskToBeRemoved := range inProgressTasksToBeRemoved{
+		fmt.Println(inProgressTaskToBeRemoved)
+		inProgressMapTasks.Remove(inProgressTaskToBeRemoved)
+	}
+	c.mapTaskLock.Unlock()
+	delete(c.workersInfoMapping, workerId)
 }
-
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -68,6 +121,21 @@ func (c *Coordinator) server() {
 		log.Fatal("listen error:", e)
 	}
 	go http.Serve(l, nil)
+	go c.healthCheck()
+}
+
+func (c *Coordinator) healthCheck() {
+	for {
+		c.workersLock.Lock()
+		for k, v := range c.workersInfoMapping {
+			if time.Now().Unix() - v.lastPing >= 10 {
+				c.handleFailedWorker(k)
+			}
+		}
+		c.workersLock.Unlock()
+		time.Sleep(1 * time.Second)
+	}
+	
 }
 
 //
@@ -89,24 +157,21 @@ func (c *Coordinator) Done() bool {
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
+	c.mapTasks = make(map[string]*list.List)
 
 	// Your code here.
 	c.workersInfoMapping = make(map[int]WorkerInfo)
+	c.mapTasks["in-progress"] = list.New()
+	c.mapTasks["completed"] = list.New()
 
-	mapTasksMapping := make(map[string][]MapTaskInfo)
-	mapTasksMapping["idle"] = []MapTaskInfo{}
-	mapTasksMapping["in-progress"] = []MapTaskInfo{}
-	mapTasksMapping["completed"] = []MapTaskInfo{}
-
-
-
+	mapTasksQueue := list.New()
 	for _,file := range files {
-		mapTaskInfo := MapTaskInfo{}
+		mapTaskInfo := MapTask{}
 		mapTaskInfo.mapTaskId = file
-		mapTasksMapping["idle"] = append(mapTasksMapping["idle"], mapTaskInfo)
+		mapTasksQueue.PushBack(mapTaskInfo)
 	}
 	
-	c.mapTasksInfoMapping = mapTasksMapping
+	c.mapTasks["idle"] = mapTasksQueue
 
 	c.server()
 	return &c

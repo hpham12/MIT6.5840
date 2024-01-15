@@ -37,7 +37,7 @@ type ReduceTask struct {
 }
 
 type Coordinator struct {
-	workersInfoMapping map[int]WorkerInfo // map worker PID to worker information
+	workersInfoMapping map[int]*WorkerInfo // map worker PID to worker information
 	mapTasks map[string]*list.List // keys are: idle, completed, and in-progress
 	reduceTasks map[string]*list.List // keys are: idle, completed, and in-progress
 	mapTaskLock sync.Mutex
@@ -56,22 +56,25 @@ func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
 		currentmapTaskId := currentMapTask.mapTaskId
 		reply.MapTask = currentmapTaskId
 		c.workersLock.Lock()
-		c.workersInfoMapping[workerId] = WorkerInfo{[]string{}, []string{currentmapTaskId}, true, time.Now().Unix()}
-		c.workersLock.Unlock()
+		c.workersInfoMapping[workerId] = &WorkerInfo{[]string{}, []string{currentmapTaskId}, true, time.Now().Unix()}
+		
 		// Remove task from idle list
 		(*c.mapTasks["idle"]).Remove(currentElement)
 
 		// Move task to in-progress list
 		(*c.mapTasks["in-progress"]).PushBack(currentMapTask)
 	} else if requestType == "ping" {
-		// val, ok := c.workersInfoMapping[workerId]
-		// if ok {
-		// 	if time.Now().Unix() - val.lastPing >= 10 {
-		// 		c.handleFailedWorker(workerId)
-		// 	}
-		// }
+		c.workersLock.Lock()
+		val, ok := c.workersInfoMapping[workerId]
+		if ok {
+			if time.Now().Unix() - val.lastPing >= 10 {
+				c.handleFailedWorker(workerId)
+			} else {
+				c.workersInfoMapping[workerId].lastPing = time.Now().Unix()
+			}
+		}
 	}
-	
+	c.workersLock.Unlock()
 	return nil
 }
 
@@ -84,13 +87,13 @@ func (c *Coordinator) handleFailedWorker(workerId int) {
 	for mapTask := completedMapTasks.Front(); mapTask != nil; mapTask = mapTask.Next() {
 		if mapTask.Value.(MapTask).currentWorker == workerId {
 			c.mapTaskLock.Lock()
-			(*c.mapTasks["idle"]).PushBack(mapTask)
+			(*c.mapTasks["idle"]).PushBack(mapTask.Value.(MapTask))
 			completedTasksToBeRemoved = append(completedTasksToBeRemoved, mapTask)
 		}
 	}
 	for mapTask := inProgressMapTasks.Front(); mapTask != nil; mapTask = mapTask.Next() {
 		if mapTask.Value.(MapTask).currentWorker == workerId {
-			(*c.mapTasks["idle"]).PushBack(mapTask)
+			(*c.mapTasks["idle"]).PushBack(mapTask.Value.(MapTask))
 			inProgressTasksToBeRemoved = append(inProgressTasksToBeRemoved, mapTask)
 		}
 	}
@@ -160,15 +163,15 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.mapTasks = make(map[string]*list.List)
 
 	// Your code here.
-	c.workersInfoMapping = make(map[int]WorkerInfo)
+	c.workersInfoMapping = make(map[int]*WorkerInfo)
 	c.mapTasks["in-progress"] = list.New()
 	c.mapTasks["completed"] = list.New()
 
 	mapTasksQueue := list.New()
 	for _,file := range files {
-		mapTaskInfo := MapTask{}
-		mapTaskInfo.mapTaskId = file
-		mapTasksQueue.PushBack(mapTaskInfo)
+		mapTask := MapTask{}
+		mapTask.mapTaskId = file
+		mapTasksQueue.PushBack(mapTask)
 	}
 	
 	c.mapTasks["idle"] = mapTasksQueue

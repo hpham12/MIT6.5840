@@ -7,6 +7,7 @@ import (
 	"net/rpc"
 	"os"
 	"time"
+	"io/ioutil"
 )
 
 //
@@ -35,12 +36,25 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
-	RequestTask()
-
+	task := RequestTask()
 	go SendSignal()
+
+	intermediate := []KeyValue{}
+	file, err := os.Open(fmt.Sprintf("../main/%s", task))
+	if err != nil {
+		log.Fatalf("cannot open %v", task)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", task)
+	}
+	file.Close()
+	kva := mapf(task, string(content))
+	intermediate = append(intermediate, kva...)
+	fmt.Println(task)
 }
 
-func RequestTask() {
+func RequestTask() string {
 
 	// declare an argument structure.
 	args := RPCArgs{}
@@ -63,6 +77,8 @@ func RequestTask() {
 	} else {
 		fmt.Printf("call failed!\n")
 	}
+
+	return reply.MapTask
 }
 
 func SendSignal() {
@@ -84,8 +100,7 @@ func SendSignal() {
 		// the Example() method of struct Coordinator.
 		ok := call("Coordinator.RPCHandler", &args, &reply)
 		if ok {
-			// reply.Y should be 100.
-			fmt.Printf("reply.MapTask %v\n", reply.MapTask)
+			fmt.Println("Ping coordinator successfully")
 		} else {
 			fmt.Printf("call failed!\n")
 		}

@@ -159,6 +159,7 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
+	nReduceTasks = nReduce;
 	c := Coordinator{}
 	c.mapTasks = make(map[string]*list.List)
 

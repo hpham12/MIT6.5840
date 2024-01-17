@@ -14,6 +14,7 @@ import "strconv"
 type RPCArgs struct {
 	RequestType string
 	WorkerId int // for this case, use process id as the workerId
+	Message string
 }
 
 type RPCReply struct {

@@ -8,7 +8,10 @@ import (
 	"os"
 	"time"
 	"io/ioutil"
+	"math"
 )
+
+var nReduceTasks = 10
 
 //
 // Map functions return a slice of KeyValue.
@@ -51,7 +54,23 @@ func Worker(mapf func(string, string) []KeyValue,
 	file.Close()
 	kva := mapf(task, string(content))
 	intermediate = append(intermediate, kva...)
+	writeToIntermediateFile(intermediate, task)
 	fmt.Println(task)
+}
+
+func writeToIntermediateFile(intermediate []KeyValue, mapTask string) {
+	numberOfFiles := len(intermediate)/nReduceTasks
+	currentIndex := 0
+	for fileNo := 0; fileNo < numberOfFiles; fileNo++ {
+		oname := fmt.Sprintf("mr-%s-%v", mapTask, fileNo)
+		ofile, _ := os.Create(oname)
+		prevIndex := currentIndex
+		for currentIndex < int(math.Min(float64(prevIndex + len(intermediate)/numberOfFiles), float64(len(intermediate)))) {
+			// this is the correct format for each line of Reduce output.
+			fmt.Fprintf(ofile, "%v %v\n", intermediate[currentIndex].Key, intermediate[currentIndex].Value)
+			currentIndex += 1
+		}
+	}
 }
 
 func RequestTask() string {
@@ -72,7 +91,6 @@ func RequestTask() string {
 	// the Example() method of struct Coordinator.
 	ok := call("Coordinator.RPCHandler", &args, &reply)
 	if ok {
-		// reply.Y should be 100.
 		fmt.Printf("reply.Y %v\n", reply.MapTask)
 	} else {
 		fmt.Printf("call failed!\n")
@@ -82,7 +100,6 @@ func RequestTask() string {
 }
 
 func SendSignal() {
-
 	// declare an argument structure.
 	args := RPCArgs{}
 
@@ -105,6 +122,30 @@ func SendSignal() {
 			fmt.Printf("call failed!\n")
 		}
 		time.Sleep(1 * time.Second)
+	}
+}
+
+func sendProgressUpdate(progress string) {
+	// declare an argument structure.
+	args := RPCArgs{}
+
+	// fill in the argument(s).
+	args.RequestType = "update"
+	args.WorkerId = os.Getpid()
+	args.Message = progress
+
+	// declare a reply structure.
+	reply := RPCReply{}
+
+	// send the RPC request, wait for the reply.
+	// the "Coordinator.Example" tells the
+	// receiving server that we'd like to call
+	// the Example() method of struct Coordinator.
+	ok := call("Coordinator.RPCHandler", &args, &reply)
+	if ok {
+		fmt.Println("Sent progress update successfully")
+	} else {
+		fmt.Printf("call failed!\n")
 	}
 }
 

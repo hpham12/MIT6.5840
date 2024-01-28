@@ -22,6 +22,7 @@ type RPCArgs struct {
 type RPCReply struct {
 	TaskType string // map or reduce
 	TaskId string
+	NReduceTask int
 }
 
 // Cook up a unique-ish UNIX-domain socket name

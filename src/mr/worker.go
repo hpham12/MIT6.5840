@@ -2,7 +2,6 @@ package mr
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"io/ioutil"
@@ -22,8 +21,6 @@ type ByKey []KeyValue
 func (a ByKey) Len() int           { return len(a) }
 func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
-
-var nReduceTasks = 10
 
 //
 // Map functions return a slice of KeyValue.
@@ -48,14 +45,15 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 //
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
+	rootDir := "/Users/hpham/Desktop/DistributedSystem/6.5840"
 	go SendSignal()
 	for {
 		// Your worker implementation here.
-		taskType, taskId := RequestTask()
-
+		taskType, taskId, nReduceTask := RequestTask()
+		
 		if taskType == "map" {
 			intermediate := []KeyValue{}
-			file, err := os.Open(fmt.Sprintf("../main/%s", taskId))
+			file, err := os.Open(fmt.Sprintf("%s/src/main/%s", rootDir, taskId))
 			if err != nil {
 				log.Fatalf("cannot open %v", taskId)
 			}
@@ -66,12 +64,12 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 			file.Close()
 			kva := mapf(taskId, string(content))
 			intermediate = append(intermediate, kva...)
-			writeToIntermediateFile(intermediate, taskId)
+			writeToIntermediateFile(intermediate, taskId, nReduceTask)
 			sendProgressUpdate("completed", "map", taskId)
 		} else if taskType == "reduce" {
-			intermediateFiles,_ := filepath.Glob(fmt.Sprintf("../main/mr-*.txt-%s", taskId))
+			intermediateFiles,_ := filepath.Glob(fmt.Sprintf("./mr-*.txt-%s", taskId))
 			intermediate := []KeyValue{}
-			oname := fmt.Sprintf("../main/mr-out-%s", taskId)
+			oname := fmt.Sprintf("./mr-out-%s", taskId)
 			ofile, _ := os.Create(oname)
 			for _, intermediateFile := range intermediateFiles {
 				file, err := os.Open(intermediateFile)
@@ -105,17 +103,12 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 			}
 		
 			ofile.Close()
+			sendProgressUpdate("completed", "reduce", taskId)
 		}
 	}
 }
 
-func checkFileExists(filePath string) bool {
-	_, error := os.Stat(filePath)
-	//return !os.IsNotExist(err)
-	return !errors.Is(error, os.ErrNotExist)
-}
-
-func writeToIntermediateFile(intermediate []KeyValue, mapTask string) {
+func writeToIntermediateFile(intermediate []KeyValue, mapTask string, nReduceTasks int) {
 	for i := 0; i < len(intermediate); i++ {
 		reduceTaskNumber := ihash(intermediate[i].Key) % nReduceTasks;
 		intermediateFileName := fmt.Sprintf("mr-%s-%v", mapTask, reduceTaskNumber);
@@ -129,7 +122,7 @@ func writeToIntermediateFile(intermediate []KeyValue, mapTask string) {
 	}
 }
 
-func RequestTask() (string, string) {
+func RequestTask() (string, string, int) {
 
 	// declare an argument structure.
 	args := RPCArgs{}
@@ -150,7 +143,7 @@ func RequestTask() (string, string) {
 		fmt.Printf("call failed!\n")
 	}
 
-	return reply.TaskType, reply.TaskId
+	return reply.TaskType, filepath.Base(reply.TaskId), reply.NReduceTask
 }
 
 func SendSignal() {
@@ -170,10 +163,8 @@ func SendSignal() {
 		// receiving server that we'd like to call
 		// the Example() method of struct Coordinator.
 		ok := call("Coordinator.RPCHandler", &args, &reply)
-		if ok {
-			fmt.Println("Ping coordinator successfully")
-		} else {
-			fmt.Printf("call failed!\n")
+		if !ok {
+			fmt.Printf("Ping failed!\n")
 		}
 		time.Sleep(1 * time.Second)
 	}
@@ -198,10 +189,8 @@ func sendProgressUpdate(progress string, taskType string, taskId string) {
 	// receiving server that we'd like to call
 	// the Example() method of struct Coordinator.
 	ok := call("Coordinator.RPCHandler", &args, &reply)
-	if ok {
-		fmt.Println("Sent progress update successfully")
-	} else {
-		fmt.Printf("call failed!\n")
+	if !ok {
+		fmt.Printf("Failed to send progress update!\n")
 	}
 }
 
@@ -225,5 +214,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	}
 
 	fmt.Println(err)
+	os.Exit(1)
 	return false
 }

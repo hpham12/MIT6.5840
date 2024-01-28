@@ -7,9 +7,10 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
-	"strconv"
 )
 
 
@@ -41,6 +42,7 @@ type Coordinator struct {
 	mapTaskLock sync.Mutex
 	reduceTasksLock sync.Mutex
 	workersLock sync.Mutex
+	nReduce int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -49,8 +51,11 @@ func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
 	workerId := args.WorkerId
 	if requestType == "task" {
 		c.workersLock.Lock()
+		c.mapTaskLock.Lock()
+		mapPhaseFinished := c.mapTasks["idle"].Len() == 0 && c.mapTasks["in-progress"].Len() == 0
+		c.mapTaskLock.Unlock()
 		// start scheduling reduce task when all map tasks are finished
-		if c.mapTasks["idle"].Len() == 0 && c.mapTasks["in-progress"].Len() == 0 {
+		if mapPhaseFinished {
 			// distribute reduce tasks
 			currentElement := c.reduceTasks["idle"].Front()
 			if currentElement != nil {
@@ -59,6 +64,7 @@ func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
 				currentReduceTaskId := currentReduceTask.reduceTaskId
 				reply.TaskId = currentReduceTaskId
 				reply.TaskType = "reduce"
+				reply.NReduceTask = c.nReduce
 				if c.workersInfoMapping[workerId] != nil {
 					c.workersInfoMapping[workerId] = &WorkerInfo{true, time.Now().Unix()}
 				}
@@ -69,6 +75,7 @@ func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
 				(*c.reduceTasks["in-progress"]).PushBack(currentReduceTask)
 			}
 		} else {
+			c.mapTaskLock.Lock()
 			currentElement := c.mapTasks["idle"].Front()
 			if currentElement != nil {
 				currentMapTask := currentElement.Value.(MapTask)
@@ -76,6 +83,7 @@ func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
 				currentMapTaskId := currentMapTask.mapTaskId
 				reply.TaskId = currentMapTaskId
 				reply.TaskType = "map"
+				reply.NReduceTask = c.nReduce
 				c.workersInfoMapping[workerId] = &WorkerInfo{true, time.Now().Unix()}
 				
 				// Remove task from idle list
@@ -84,6 +92,7 @@ func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
 				// Move task to in-progress list
 				(*c.mapTasks["in-progress"]).PushBack(currentMapTask)
 			}
+			c.mapTaskLock.Unlock()
 		}
 	} else if requestType == "ping" {
 		c.workersLock.Lock()
@@ -97,7 +106,8 @@ func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
 		}
 	} else if requestType == "update" {
 		c.workersLock.Lock()
-		if (args.Task == "map") {
+		if args.Task == "map" {
+			c.mapTaskLock.Lock()
 			mapTaskId := args.TaskId
 			var completedMapTaskToBeRemoved *list.Element
 			// Remove task from idle list
@@ -111,12 +121,26 @@ func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
 				c.mapTasks["in-progress"].Remove(completedMapTaskToBeRemoved)
 			}
 			if c.mapTasks["idle"].Len() == 0 && c.mapTasks["in-progress"].Len() == 0 {
-				for i := 0 ; i < 10; i++ {
+				for i := 0 ; i < c.nReduce; i++ {
 					c.reduceTasks["idle"].PushBack(ReduceTask{reduceTaskId: strconv.Itoa(i)})
 				}
 			}
+			c.mapTaskLock.Unlock()
 		} else if args.Task == "reduce" {
-
+			c.reduceTasksLock.Lock()
+			reduceTaskId := args.TaskId
+			var completedReduceTaskToBeRemoved *list.Element
+			// Remove task from idle list
+			for reduceTask := c.reduceTasks["in-progress"].Front(); reduceTask != nil; reduceTask = reduceTask.Next() {
+				if reduceTask.Value.(ReduceTask).reduceTaskId == reduceTaskId {
+					(*c.reduceTasks["completed"]).PushBack(reduceTask.Value.(ReduceTask))
+					completedReduceTaskToBeRemoved = reduceTask
+				}
+			}
+			if completedReduceTaskToBeRemoved != nil {
+				c.reduceTasks["in-progress"].Remove(completedReduceTaskToBeRemoved)
+			}
+			c.reduceTasksLock.Unlock()
 		}
 	}
 	c.workersLock.Unlock()
@@ -190,9 +214,12 @@ func (c *Coordinator) healthCheck() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	ret := false
 
-	// Your code here.
+	ret := (c.mapTasks["idle"].Len() == 0) && 
+		(c.mapTasks["in-progress"].Len() == 0) && 
+		(c.reduceTasks["idle"].Len() == 0) && 
+		(c.reduceTasks["in-progress"].Len() == 0) && 
+		(c.reduceTasks["completed"].Len() == c.nReduce)
 
 	return ret
 }
@@ -203,10 +230,11 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	nReduceTasks = nReduce;
 	c := Coordinator{}
 	c.mapTasks = make(map[string]*list.List)
 	c.reduceTasks = make(map[string]*list.List)
+	c.nReduce = nReduce
+
 	// Your code here.
 	c.workersInfoMapping = make(map[int]*WorkerInfo)
 	c.mapTasks["in-progress"] = list.New()
@@ -218,7 +246,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	mapTasksQueue := list.New()
 	for _,file := range files {
 		mapTask := MapTask{}
-		mapTask.mapTaskId = file
+		mapTask.mapTaskId = filepath.Base(file)
 		mapTasksQueue.PushBack(mapTask)
 	}
 	

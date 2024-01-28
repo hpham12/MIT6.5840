@@ -2,7 +2,6 @@ package mr
 
 import (
 	"container/list"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -10,12 +9,11 @@ import (
 	"os"
 	"sync"
 	"time"
-	// "reflect"
+	"strconv"
 )
 
+
 type WorkerInfo struct {
-	reduceTasks []string // list of reduce tasks
-	mapTasks []string // list of map tasks
 	status bool // false for down, true for up
 	lastPing int64 // time of last ping
 }
@@ -50,19 +48,43 @@ func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
 	requestType := args.RequestType
 	workerId := args.WorkerId
 	if requestType == "task" {
-		currentElement := c.mapTasks["idle"].Front()
-		currentMapTask := currentElement.Value.(MapTask)
-		currentMapTask.currentWorker = workerId
-		currentmapTaskId := currentMapTask.mapTaskId
-		reply.MapTask = currentmapTaskId
 		c.workersLock.Lock()
-		c.workersInfoMapping[workerId] = &WorkerInfo{[]string{}, []string{currentmapTaskId}, true, time.Now().Unix()}
+		// start scheduling reduce task when all map tasks are finished
+		if c.mapTasks["idle"].Len() == 0 && c.mapTasks["in-progress"].Len() == 0 {
+			// distribute reduce tasks
+			currentElement := c.reduceTasks["idle"].Front()
+			if currentElement != nil {
+				currentReduceTask := currentElement.Value.(ReduceTask)
+				currentReduceTask.currentWorker = workerId
+				currentReduceTaskId := currentReduceTask.reduceTaskId
+				reply.TaskId = currentReduceTaskId
+				reply.TaskType = "reduce"
+				if c.workersInfoMapping[workerId] != nil {
+					c.workersInfoMapping[workerId] = &WorkerInfo{true, time.Now().Unix()}
+				}
+				// Remove task from idle list
+				(*c.reduceTasks["idle"]).Remove(currentElement)
 		
-		// Remove task from idle list
-		(*c.mapTasks["idle"]).Remove(currentElement)
-
-		// Move task to in-progress list
-		(*c.mapTasks["in-progress"]).PushBack(currentMapTask)
+				// Move task to in-progress list
+				(*c.reduceTasks["in-progress"]).PushBack(currentReduceTask)
+			}
+		} else {
+			currentElement := c.mapTasks["idle"].Front()
+			if currentElement != nil {
+				currentMapTask := currentElement.Value.(MapTask)
+				currentMapTask.currentWorker = workerId
+				currentMapTaskId := currentMapTask.mapTaskId
+				reply.TaskId = currentMapTaskId
+				reply.TaskType = "map"
+				c.workersInfoMapping[workerId] = &WorkerInfo{true, time.Now().Unix()}
+				
+				// Remove task from idle list
+				(*c.mapTasks["idle"]).Remove(currentElement)
+	
+				// Move task to in-progress list
+				(*c.mapTasks["in-progress"]).PushBack(currentMapTask)
+			}
+		}
 	} else if requestType == "ping" {
 		c.workersLock.Lock()
 		val, ok := c.workersInfoMapping[workerId]
@@ -72,6 +94,29 @@ func (c *Coordinator) RPCHandler(args *RPCArgs, reply *RPCReply) error {
 			} else {
 				c.workersInfoMapping[workerId].lastPing = time.Now().Unix()
 			}
+		}
+	} else if requestType == "update" {
+		c.workersLock.Lock()
+		if (args.Task == "map") {
+			mapTaskId := args.TaskId
+			var completedMapTaskToBeRemoved *list.Element
+			// Remove task from idle list
+			for mapTask := c.mapTasks["in-progress"].Front(); mapTask != nil; mapTask = mapTask.Next() {
+				if mapTask.Value.(MapTask).mapTaskId == mapTaskId {
+					(*c.mapTasks["completed"]).PushBack(mapTask.Value.(MapTask))
+					completedMapTaskToBeRemoved = mapTask
+				}
+			}
+			if completedMapTaskToBeRemoved != nil {
+				c.mapTasks["in-progress"].Remove(completedMapTaskToBeRemoved)
+			}
+			if c.mapTasks["idle"].Len() == 0 && c.mapTasks["in-progress"].Len() == 0 {
+				for i := 0 ; i < 10; i++ {
+					c.reduceTasks["idle"].PushBack(ReduceTask{reduceTaskId: strconv.Itoa(i)})
+				}
+			}
+		} else if args.Task == "reduce" {
+
 		}
 	}
 	c.workersLock.Unlock()
@@ -103,7 +148,6 @@ func (c *Coordinator) handleFailedWorker(workerId int) {
 	}
 
 	for _,inProgressTaskToBeRemoved := range inProgressTasksToBeRemoved{
-		fmt.Println(inProgressTaskToBeRemoved)
 		inProgressMapTasks.Remove(inProgressTaskToBeRemoved)
 	}
 	c.mapTaskLock.Unlock()
@@ -162,11 +206,14 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	nReduceTasks = nReduce;
 	c := Coordinator{}
 	c.mapTasks = make(map[string]*list.List)
-
+	c.reduceTasks = make(map[string]*list.List)
 	// Your code here.
 	c.workersInfoMapping = make(map[int]*WorkerInfo)
 	c.mapTasks["in-progress"] = list.New()
 	c.mapTasks["completed"] = list.New()
+	c.reduceTasks["idle"] = list.New()
+	c.reduceTasks["in-progress"] = list.New()
+	c.reduceTasks["completed"] = list.New()
 
 	mapTasksQueue := list.New()
 	for _,file := range files {

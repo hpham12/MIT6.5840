@@ -15,10 +15,13 @@ type RPCArgs struct {
 	RequestType string
 	WorkerId int // for this case, use process id as the workerId
 	Message string
+	Task string
+	TaskId string
 }
 
 type RPCReply struct {
-	MapTask string // name of the file to apply map function
+	TaskType string // map or reduce
+	TaskId string
 }
 
 // Cook up a unique-ish UNIX-domain socket name
